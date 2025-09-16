@@ -1,0 +1,1413 @@
+---
+title: 'An Ensemble Model to Predict Pulmonary Disease : Development and Evaluation'
+author: "Venkatesh,Naimisha"
+date: "Summer 2025"
+output:
+  html_notebook:
+    toc: true
+    toc_depth: 4
+    toc_float: true
+  html_document:
+    toc: true
+    toc_depth: '4'
+    df_print: paged
+---
+
+# Install and Load Packages
+
+```{r intall_packages,echo=TRUE}
+#req packages
+req_package <- c("caret", "knitr", "pROC", "ggplot2", "e1071", "randomForest", "corrplot")
+
+istall_if_req <- function(pkg){
+  if(!require(pkg,character.only = T)){
+    install.packages(pkg,dependencies = T)
+    library(pkg,character.only = T)
+  }
+  else(library(pkg,character.only = T))
+}
+#apply to all req packages
+lapply(req_package,istall_if_req)
+
+```
+
+# Load CSV
+
+The dataset used for this project was obtained from Kaggle:<https://www.kaggle.com/datasets/shantanugarg274/lung-cancer-prediction-dataset/data.The> objective is to predict whether an individual has pulmonary disease(Yes/No) based on behavioral and clinical features. 3 classification algorithms were applied:logistic regression,random forest and support vector machine to the dataset and heterogenous ensembles were built to analyze the data.
+
+```{r load_csv,echo=T,warning=F}
+url <- "https://drive.google.com/uc?export=download&id=1aFWemvbMPx_F0IUYUwKhj-wBGvssmNf4"
+
+df <- read.csv(url ,stringsAsFactors = F)
+```
+
+## Exploratory Data Analysis
+
+In this section we will perform a brief exploratory data analysis(EDA) to understand the features:
+
+1)  Use head(), summary(), and str() to examine the dataset structure.
+2)  Check for missing values and handle them.
+3)  Check for outliers and handle them.
+4)  Visualize the features and class labels.
+5)  Check for multicollinearity and handle them.
+
+The dataset consists of 5000 rows and 18 columns.It has the following features: "GENDER","SMOKING","FINGER_DISCOLORATION","MENTAL_STRESS", "EXPOSURE_TO_POLLUTION", "LONG_TERM_ILLNESS", "IMMUNE_WEAKNESS", "BREATHING_ISSUE", "ALCOHOL_CONSUMPTION", "THROAT_DISCOMFORT", "CHEST_TIGHTNESS", "FAMILY_HISTORY", "SMOKING_FAMILY_HISTORY", "STRESS_IMMUNE", "PULMONARY_DISEASE".
+
+"PULMONARY_DISEASE" is the target variable.
+
+```{r explore_struc,echo=TRUE,warning=FALSE}
+#explore structure
+head(df)
+str(df)
+summary(df)
+```
+
+## Check for outliers
+
+To ensure that the accuracy and performance of the algorithms it is important to identify any outliers present within the numeric features of the training dataset.Outliers can negatively influence the predictions.The outliers are identified using the Z-score method where data points are classified as outliers if they have a Z-score more than 3 standard deviations away from the mean.
+
+```{r detect_outliers,echo=TRUE,warning=FALSE}
+
+
+# Numeric col
+numeric_col_names <- names(df)[sapply(df,is.numeric)]
+list_of_outliers=list()
+for (col in numeric_col_names){
+  
+  # Mean and sd for numeric col
+  mean_numeric_col <-mean(df[[col]])
+  std_numeric_col <- sd(df[[col]])
+
+  # Calculate z score 
+  z_score_numeric_col <- abs((df[[col]]-mean_numeric_col)/std_numeric_col)
+  
+  # Number of outliers> z-score =3
+  no_outliers <- which(z_score_numeric_col>3)
+  
+  list_of_outliers[[col]] <-   no_outliers 
+  s <- "no"
+  
+  if (length(no_outliers) > 0)
+    s <- length(no_outliers)
+  
+  print(paste0("Column '", col, "' has ", 
+                 s, " outliers"))
+}
+summary(df)
+```
+
+Outliers are handled in two different ways:
+
+1)Removing rows that contain outliers.
+
+2)Imputing outliers with trimmed mean or median.
+
+The column `OXYGEN_SATURATION` has 13 outliers and, they can be imputed with the corresponding median.
+
+```{r impute_outliers_median,echo=TRUE,warning=FALSE}
+
+
+store_outliers <- c()
+
+# For loop to remove outliers present
+for (col in names(list_of_outliers)){
+  
+  # Outliers index for column
+  outlier_index <- list_of_outliers[[col]]
+  
+  #checkif outliers exist
+  if(length(outlier_index)>0){
+    
+    #calc median of corresponding col from training dataset
+    median_col <- median(df[[col]],na.rm=T)
+    
+    # training outliers replaced
+    df[outlier_index,col] <- median_col
+    
+  }
+  
+}
+# Check if outliers have been correctly imputed
+summary(df)
+
+```
+
+## Check for missing values
+
+As per the assignment rubric,although there are no missing values are present in the original datset,3% of the values in the numeric columns of the training data were randomly removed.These values were then imputed using the median of the corresponding numeric columns.
+
+```{r check_missing_val,echo=TRUE,warning=FALSE}
+# Check for missing values
+any(is.na(df))
+```
+
+Thus, there are no missing values present in the dataset and thus for this project 3% of the values in the Numeric Columns will be randomly set to *NA*. \### Randomly set values to NA
+
+```{r random_set_missing,echo=TRUE,warning=F}
+#set seed 
+set.seed(123)
+#values set as missing
+missing_frac <- 0.03
+#get numeric col
+numeric_col_missing <- c("AGE","OXYGEN_SATURATION","ENERGY_LEVEL")
+
+#generate missing values
+for (col in numeric_col_missing){
+  number <- nrow(df)
+  missing_index <- sample(1:number,size=floor(missing_frac * number))
+  df[missing_index,col] <- NA
+}
+
+```
+
+### Identify missing values
+
+Missing values in the training dataset need to be identified and handled as they influence the model's predictions. Missing values can be handled:
+
+1)  Removing rows that contain missing values.
+
+2)  Imputation of missing values using mean or median.
+
+```{r identify_missing,echo=TRUE,warning=FALSE}
+# Check for missing values
+cols <- colnames(df)
+for (c in cols){
+  missing_rows <- which(is.na(df[[c]]))
+  num_missing <- length(missing_rows)
+  s <- "no"
+  
+  if (num_missing > 0)
+    s <- num_missing
+  
+  print(paste0("Column '", c, "' has ", 
+                 s, " missing values"))
+  }
+
+
+```
+
+Thus,the columns `AGE`,`ENERGY_LEVEL` and `OXYGEN_SATURATION` have missing values which will be imputed using the corresponding median values.
+
+```{r impute_missing,echo=TRUE,warning=FALSE}
+missing_col <- c("AGE","OXYGEN_SATURATION","ENERGY_LEVEL")
+#impute missing val using median
+for (col in missing_col){
+ if (any(is.na(df[[col]]))) {
+   median_val <- median(df[[col]],na.rm=T)
+   df[[col]][is.na(df[[col]])] <- median_val
+ }
+}
+#check missing values have been imputed
+any(is.na(df))
+
+```
+
+Thus,the missing values have been imputed using the median values of the corresponding columns.
+
+## Exploratory data plots
+
+A scatterplot was constructed for the columns `AGE` and `OXYGEN_SATURATION` and visualized based on the target variable(`PULMONARY_DISEASE`).
+
+```{r scatterplot,echo=TRUE,warning=F}
+#target var for color visualization
+#df$PULMONARY_DISEASE <- factor(df$PULMONARY_DISEASE,levels=c("0","1"),labels = c("No","Yes"))
+#scatterplot
+ggplot(df,aes(x=AGE,y=OXYGEN_SATURATION,color=PULMONARY_DISEASE))+geom_point()
+
+
+```
+
+## Encoding
+
+Convert the 'YES/NO' labels to 1/0 using binary encoding and convert into factor.
+
+```{r encoding,echo=TRUE,warning=FALSE}
+df$PULMONARY_DISEASE <- ifelse(df$PULMONARY_DISEASE  == "YES",1,0)
+#convert to factor
+#df$PULMONARY_DISEASE <- factor(df$PULMONARY_DISEASE,levels=c("0","1"))
+#check encoding
+head(df)
+```
+
+## Visualize
+
+We can visualize the categorical features using bar plots and the numeric features using histograms.
+
+```{r bar_plots,echo=TRUE,warning=FALSE}
+
+#categorical col to plot
+col_name_categorical <- c("GENDER","SMOKING","FINGER_DISCOLORATION","MENTAL_STRESS", "EXPOSURE_TO_POLLUTION", "LONG_TERM_ILLNESS", "IMMUNE_WEAKNESS", "BREATHING_ISSUE", "ALCOHOL_CONSUMPTION", "THROAT_DISCOMFORT", "CHEST_TIGHTNESS", "FAMILY_HISTORY", "SMOKING_FAMILY_HISTORY", "STRESS_IMMUNE", "PULMONARY_DISEASE")
+
+#numeric col to plot
+col_name_numeric <- c("OXYGEN_SATURATION","ENERGY_LEVEL","AGE")
+#for loop to bar plot 
+for(col in col_name_categorical){
+    par(mfrow=c(1,2))
+  barplot(table(df[[col]]),main=col,col="lightblue")
+}
+
+#for loop to histogram plot
+  for(col in col_name_numeric){
+      #par(mfrow=c(1,2))
+
+ hist((df[[col]]),main=paste("Histogram of",col),xlab=col,col="lightgreen")
+}
+
+```
+
+Thus,we can see the proportion of distribution for all the categorical features. The histograms for the features: 1) `AGE` shows a rough uniform spread across 30 to 80 and requires normalization as it is on a different scale and can affect the algorithms. 2) `OXYGEN_SATURATION` has a slight uniform spread but is on a differenct scale and requires normalization. 3)`ENERGY_LEVEL` has a bell-shaped curve but has a range of 20-80 mand can be normalized to be suitable for the algorithms.
+
+## Normalization
+
+Z-score normalization is performed on the features("AGE","ENERGY_LEVEL","OXYGEN_SATURATION") which brings all of them on a common scale.After normalizatikon histograms are plotted to visualize the distributions of the variables.
+
+```{r normalize_features,echo=TRUE,warning=F}
+#normalize col
+normalize_col <- c("AGE","ENERGY_LEVEL","OXYGEN_SATURATION")
+#for loop to normalize
+for (col in normalize_col){
+  col_mean <- mean(df[[col]],na.rm=T)
+  col_std <- sd(df[[col]],na.rm=T)
+  df[[col]] <- (df[[col]]-col_mean)/col_std
+}
+#numeric col to plot
+col_name_numeric <- c("OXYGEN_SATURATION","ENERGY_LEVEL","AGE")
+
+#for loop to histogram plot
+  for(col in col_name_numeric){
+      #par(mfrow=c(1,2))
+
+ hist((df[[col]]),main=paste("Histogram of",col),xlab=col,col="lightgreen")
+}
+
+```
+
+Thus,the columns have been normalized using Z score standardization.
+
+## Feature engineering:new derived feature
+
+To increase the ability for the model to estimate the effect of stress related variables(`MENTAL_STRESS` and `STRESS_IMMUNE`) a combined feature called `TOTAL_STRESS` was created and the original columns were removed to avoid multicollinearity.
+
+```{r create_feature,echo=TRUE,warning=FALSE}
+#create new feat
+df$TOTAL_STRESS <- df$STRESS_IMMUNE+ df$MENTAL_STRESS
+
+#remove old columns
+df <- df[,!names(df) %in% c("MENTAL_STRESS","STRESS_IMMUNE")]
+
+```
+
+## Prinicpal Component Analysis
+
+PCA was applied to the normalized numeric features(except the target variable) to check for dimensionality and identify the patterns between the classes.
+
+```{r pca_analysis, echo = TRUE, warning=FALSE}
+
+#get numeric features
+numeric_feat_pca <- df[,sapply(df,is.numeric)]
+numeric_feat_pca <- numeric_feat_pca[,colnames(numeric_feat_pca)!="PULMONARY_DISEASE"]
+
+#run pca
+pca_res <- prcomp(numeric_feat_pca,center=T,scale.=T)
+
+#summary of pca
+summary(pca_res)
+```
+
+The first few components show some variance but no single component has significant variability as the first component has only 11% of the total variance. Thus,there is no dominant direction of the variance in the dataset and the data is evenly spread across all the features.The dimensionality reduction using PCA would simplify the dataset and sacrifice important features and therefore PCA is not necessary for this dataset.
+
+## Multicollinearity
+
+Multicollinearity is present in logistic linear regression when two or more independent variables are highly correlated.This correlation can lead to difficulty for the model to accurately predict both features as it can double count the information. The threshold to detect multicollinearity for this dataset is 0.8.
+
+```{r detect_multicollinearity,echo=TRUE,warning=F}
+numeric_col_cor <- sapply(df,is.numeric)
+
+# Construct correlation mat
+cor_mat <- cor(df[,numeric_col_cor])
+cor_mat
+corrplot(cor_mat,method="color")
+```
+
+Thus,there is no multicollinearity detected for a threshold of 0.8 in this dataset.
+
+## Create Random Subsets(Training and Testing)
+
+To evaluate and validate the models on the lung-cancer prediction dataset the original dataset will be split into subsets for training and testing the model. This ensures that the model is trained on one part of the data and it's performance tested on the unseen data.
+
+Using `createDataPartition()` from the caret package, we divide the data and ensure that the proportion of our target variable (PULMONARY_DISEASE) is the same for both subsets. We are going to use a 70:30 split where 70% of the data is used for training and 30% is for testing, and we have set a seed to ensure reproducibility.
+
+```{r create_subsets,echo=TRUE,warning=FALSE}
+
+# Set seed for reproducibility
+set.seed(123)
+
+# Get row index and use a specific split with an 70:30 ratio, where 70% is the training data and 30% is testing data
+split_values <- createDataPartition(df$PULMONARY_DISEASE,p=0.7,list=FALSE)
+
+# Create test and training dataset 
+df_subset_train<-df[split_values,]
+df_subset_test <- df[-split_values,]
+
+# Check if the dataset has been correctly split in a 70:30 ratio
+nrow(df_subset_train)  
+nrow(df_subset_test) 
+```
+
+## Create Bagged Subsets
+
+To reduce the variance and bias in the models bootstrap sampling is used for multiple random subsets of the training data were generated.10 different training subsets were created from the previous original dataset(`df`). Each of these subsets contains 70% of the training data **with replacement**.These subsets are then used to train multiple logistic regression models as part of the bagging ensemble.
+
+```{r bagging_subsets,echo=TRUE,warning=FALSE}
+
+# Number of partitions and sample size
+n_partitions <- 10
+sample_size <- round(0.7 * nrow(df_subset_train))
+
+# Create a list to hold the different partitions
+partitions <- list()
+
+
+# Generate the different partitions with replacement from the training data
+for (i in 1:n_partitions) {
+  
+  # Sample the row indices with replacement
+  sampled_indices <- sample(1:nrow(df_subset_train), 
+                            size = sample_size, 
+                            replace = TRUE)
+  
+  # Create the subset
+  partitions[[i]] <-df_subset_train[sampled_indices, ]
+}
+
+# Inspect the first rows of the partition
+head(partitions[[1]],5)
+
+
+```
+
+The 10 partitions have been created and contains bootstrap sample of 70% of the original dataset which has been generated with replacement.
+
+# Logistic Regression Algorithm.
+
+## Logistic Regression on full model
+
+Initially,the logistic regression model is trained on the full training subset(`df_subset_train`) and predicted on the test subset(`df_subset_test`). In this model, a threshold of 0.7 was used to convert the predicted probabilities into class labels.The default threshold of 0.5 assumes that both classes are equal but while predicting lung cancer for this dataset false positives can be predicted. By increasing the threshold to 0.7 the model is much more nuanced in predicting the disease and can increase the precision of the model by reducing the false positives.
+
+```{r log_reg_full_model,echo=T,warning=FALSE}
+
+#intial log regression model
+intial_log_model <- glm(PULMONARY_DISEASE ~ .,data=df_subset_train,family="binomial")
+#predict prob on test dataset
+predict_inital_log_model <- predict(intial_log_model,df_subset_test,type="response")
+#convert prob to class labels
+predict_initial_log_model_label <- ifelse(predict_inital_log_model > 0.7,"1","0")
+predict_initial_log_model_label <- factor(predict_initial_log_model_label,levels=c("0","1"))
+
+#get actual labels
+actual_log_labels <- factor(df_subset_test$PULMONARY_DISEASE,levels=c("0","1"))
+#calc confusion mat
+intial_con_mat_logistic <- confusionMatrix(predict_initial_log_model_label,actual_log_labels,positive="1")
+
+#print f1 score
+intial_f1_logisitc <- intial_con_mat_logistic$byClass["F1"]
+intial_f1_logisitc
+
+
+```
+
+The F1-score for the full logistic model is `r intial_f1_logisitc`.
+
+## Logistic Regression on each partition using hyperparameter-tuning.
+
+Initially,the logistic regression models are trained using the 10 subsets with all the predictors. Backward elimination is used in regression analysis as hyperparamter-tuning to iteratively remove the least statistically significant predictor based on:
+
+1)  High p value:Predictors with p-value greater than 0.05 are removed one at a time and after each removal the model is refitted and reevaluated until the statistically significant variables remain.
+
+2)  Akaike Information Criterion(AIC): The step() function automatically removes the variables in the model based on the AIC values.
+
+For this dataset,the predictors are selected and hypertuned using the AIC backward elimination method.This method ensures that the model selects the features based on improving the overall performance of the model and reduces the risk of over fitting the data.
+
+```{r logistic_reg,echo=TRUE,warning=FALSE}
+
+# Create list to store models
+store_logistic_models <- list()
+
+# Fit logistic regression model on each training partition
+for (i in 1:length(partitions)){
+  training_data <- partitions[[i]]
+  
+  # Logistic regression for full model
+  full_logistic_model <- glm(PULMONARY_DISEASE ~ .,data=training_data,family="binomial")
+  
+  #backward elimination using AIC
+  step_logistic_model <- step(full_logistic_model,direction="backward",trace=F)
+  store_logistic_models[[i]] <- step_logistic_model
+}
+
+```
+
+Thus the logistic regression models are created for the 10 subsets and have undergone hyper tuning using the backward elimination AIC method.
+
+## Train models.
+
+Predictions are generated for each of the hypertuned 10 logistic regression models trained on the bootstrap subsets.A matrix is created to store the predicted probabilities where each column corresponds to a specific model and each row to the observation in the test set. These predictions will be be used to construct the homogeneous ensemble by averaging the outputs from all the models.
+
+```{r predictions_logistic_reg,echo=TRUE,warning=FALSE}
+
+# Count the number of multiply logistic models
+number_models <- length(store_logistic_models)
+
+# Create a matrix of 0 to store the predictions
+logistic_model_pred <- matrix(0,nrow=nrow(df_subset_test),ncol=number_models)
+
+# Create a loop that will go through each model making predictions
+for(i in 1:number_models){
+  logistic_model_pred[,i] <- predict(store_logistic_models[[i]],df_subset_test,type="response")
+}
+
+```
+
+The predicted models are thus stored in a matrix and individual predictions on the test set are generated.
+
+## Evaluate each individual hypertuned model using F1 score
+
+The performance of each logistic regression model is evaluated using the F1-score. In this model, a threshold of 0.7 was used to convert the predicted probabilities into class labels.The default threshold of 0.5 assumes that both classes are equal but while predicting lung cancer for this dataset false positives can be predicted. By increasing the threshold to 0.7 the model is much more nuanced in predicting the disease and can increase the precision of the model by reducing the false positives.
+
+The predicted labels are compared to the actual `PULMONARY_DISEASE` values from the test dataset. A confusion matrix is generated for each model and the precision,recall values are used to calculate the F1-score.
+
+```{r calc_F1_score_individual ,echo=TRUE,warning=FALSE}
+
+# Get actual label for diagnosis (target vairable)
+actual_label_logistic <- factor(df_subset_test$PULMONARY_DISEASE,levels=c("0","1"))
+
+# Initialize vector to store F1 values for each model
+f1_val_logistic <- numeric(number_models)
+
+for(i in 1:number_models){
+  predicted_prob <- logistic_model_pred[,i]
+  
+  # Predicted label for threshold more than 0.5
+  predicted_label <- ifelse(predicted_prob>0.7,"1","0")
+  predicted_label <- factor(predicted_label,levels=c("0","1"))
+  
+# Construct confusion Matrix to compare predicted vs actual labels 
+con_mat_logistic <-confusionMatrix( predicted_label ,actual_label_logistic,positive="1")
+
+# Calc F1 score by getting precision and recall 
+precision_logistic <- con_mat_logistic$byClass["Pos Pred Value"]
+recall_logistic <- con_mat_logistic$byClass["Sensitivity"]
+
+# Calc and store F1 score for each model
+f1_val_logistic[i] <- 2 * (precision_logistic  * recall_logistic )/(precision_logistic +recall_logistic )
+}
+
+
+# Get model with highest F1 score
+best_logistic_model_index <- which.max(f1_val_logistic)
+best_f1_score <- f1_val_logistic[best_logistic_model_index]
+
+best_f1_score 
+```
+
+Thus,the model with the highest F1-score is `r best_f1_score`.
+
+## Evaluate homogeneous logistic regression ensemble
+
+The performance of the homogeneous ensemble is evaluated using the predictions from the 10 individual logistic regression models.The predicted probabilities are aggregated from all the models by averaging them.This method helps reduce variance and bias and helps improve the stability of the predictions.
+
+The averaged probabilities are converted into binary class predictions('0'/'1') using a threshold of 0.7.These ensemble predictions are compared against the actual `PULMONARY_DISEASE` values from the test dataset and a confusion matrix is constructed.
+
+The F1-score of the ensemble is calculated which balances the precision and recall of the model and provides the performance of the model. In this section, we evaluate the performance of the **homogeneous ensemble** created from our 10 logistic regression models.
+
+```{r homogenous_ensemble_log,echo=TRUE,warning=F}
+#func for homogenous ensemble
+func_logistic_ensemble <- function(pred_matrix,true_labels,threshold=0.7){
+  #get avg predicted prob
+  mean_pred_log <- rowMeans(pred_matrix)
+  
+  #convert to binary pred
+  pred_class_log <- ifelse(mean_pred_log > threshold,"1","0")
+  pred_class_log <- factor(pred_class_log,levels=c("0","1"))
+  
+  #convert true labels to factor
+  actual_label_log <- factor(true_labels,levels=c("0","1"))
+  #calc confusion mat
+  con_mat_log <- confusionMatrix(pred_class_log,actual_label_log,positive="1")
+  f1_log_ensemble <- con_mat_log$byClass["F1"]
+  return(list(predictions=pred_class_log,f1_score=f1_log_ensemble))
+}
+homogenous_log_ensemble <- func_logistic_ensemble(logistic_model_pred,df_subset_test$PULMONARY_DISEASE)
+logistic_ensemble <- homogenous_log_ensemble$predictions
+f1_score <-  homogenous_log_ensemble$f1_score
+f1_score
+```
+
+## Evaluate homogenous ensemble using k-cross validation.
+
+To evaluate the ensemble of 10 logistic regression models 5-fold cross validation was performed on the training data.In each iteration the 4 folds are used to train the ensemble model and the other fold is used for validation.The K-cross validation is applied only to the training subset data to ensure that the test data remains unseen until the final evaluation and thus prevent data leakage. In each fold,the predictions were made on the 10 tuned models and averaged for a threshold 0f 0.7 and the F1-scores were calculated for each model. In this model, a threshold of 0.7 was used to convert the predicted probabilities into class labels.The default threshold of 0.5 assumes that both classes are equal but while predicting lung cancer for this dataset false positives can be predicted. By increasing the threshold to 0.7 the model is much more nuanced in predicting the disease and can increase the precision of the model by reducing the false positives.
+
+```{r eval_k_log,echo=TRUE,warning=F}
+#set seed for reprodicubility
+set.seed(123)
+
+#training set for cross-validation
+df_log_cv <- df_subset_train
+#no of folds
+k <- 5
+
+#create folds using traning data
+fold_cv_log <- createFolds(df_log_cv$PULMONARY_DISEASE,k=k,list=T)
+
+#store f1 val
+store_f1_cv_log <- numeric(k)
+#for loop for each fold
+for (i in 1:k){
+  #split into trainig and validation set
+  val_index <-fold_cv_log[[i]]
+  val_data <- df_log_cv[val_index,]
+  #predict for 10 log models
+  pred_matrix_cv <- matrix(0,nrow=nrow(val_data),ncol=length(store_logistic_models))
+  
+  for(j in 1:length(store_logistic_models)){
+    pred_matrix_cv[,j] <- predict(store_logistic_models[[j]],val_data,type="response")
+  }
+  #avg predictions
+  avg_pred_cv_log <- rowMeans(pred_matrix_cv)
+  pred_label_cv <- ifelse(avg_pred_cv_log>0.7,"1","0")
+  pred_label_cv <- factor(pred_label_cv,levels=c("0","1"))
+  #actual label
+  actual_label_cv <- factor(val_data$PULMONARY_DISEASE,levels=c("0","1"))
+  
+  #calc confusion mat
+  con_mat_log_cv <- confusionMatrix(pred_label_cv,actual_label_cv,positive="1")
+  store_f1_cv_log [i] <-con_mat_log_cv$byClass["F1"]
+}
+
+#avg f1 across folds
+avg_f1_cv <- mean(store_f1_cv_log)
+avg_f1_cv
+```
+
+The F1-score for the K-cross validation dataset is: `r avg_f1_cv`.
+
+## ROC-AUC for Logistic Regression Model
+
+The ROC curve is used to illustrate the diagnostic ability of a binary classifier as its discrimination threshold is varied.The ROC curve plots the True Positive Rate(TPR) against the False Positive Rate(FPR). These metrics are calculated using:
+
+1)  True Positive Rate(TPR) = TP/(TP+FN)
+2)  False Positive Rate(FPR) = FP/(FP+TN)
+
+The area under the curve provides an aggregate measure of the model's performance.It ranges from 0 to 1,a higher AUC indicated better model performance.
+
+```{r roc_log_reg,echo=TRUE,warning=F}
+
+#mean pred
+mean_pred <- rowMeans(logistic_model_pred)
+#get actual labels as numeric for roc
+actual_prob_numeric <- as.numeric(as.character(df_subset_test$PULMONARY_DISEASE))
+
+# mean predicted prob from homogenous ensemble
+calc_roc <- roc(actual_prob_numeric,mean_pred)
+
+
+#plot roc curve
+plot(calc_roc,main="ROC curve for Logistic Regression Ensemble",print.auc=T)
+
+#calc AUC value for logistic regression ensemble
+auc_val <- auc(calc_roc)
+length(actual_prob_numeric)
+length(mean_pred)
+
+
+```
+
+The AUC value for the logistic regression model is `r auc_val`.This means that there is a `r round(auc_val * 100,1)` % chance that the model will rank a patient with pulmonary disease higher than a randomly chosen patient without the disease based on the predicted probabilities.
+
+## Final Metrics for Logistic Regression Model.
+
+The below table lists the F1-score and Accuracy for the Initial Logisitc Regression,Hypertuned Logisitc Regression,Homogenous Ensemble and K-cross validated model.
+
+```{r display_log_reg,echo=TRUE,warning=FALSE}
+#actual label
+actual_label <- factor(df_subset_test$PULMONARY_DISEASE, levels = c("0", "1"))
+
+#calc accuracy and f1 for intial logisit cregression model
+accuracy_log_intial <- sum(predict_initial_log_model_label== actual_log_labels)/length(actual_log_labels)
+f1_log_intial <- as.numeric(intial_f1_logisitc)
+
+#accuracy and f1 for hypertuned model
+best_log_predictions <- ifelse(logistic_model_pred[,best_logistic_model_index]>0.7,"1","0")
+best_log_predictions <- factor(best_log_predictions,levels=c("0","1"))
+accuracy_best_log <- sum(best_log_predictions == actual_label_logistic)/length(actual_label_logistic)
+f1_best_log <- f1_val_logistic[best_logistic_model_index]
+
+#accuracy anf f1 for ensemble
+accuracy_log_ensemble <- sum(logistic_ensemble==actual_label)/length(actual_label)
+f1_log_ensemble <- as.numeric(f1_score)
+
+# f1 score for k-cross
+accuracy_k <- NA
+f1_k <- avg_f1_cv
+#table to store values
+logistic_reg_metrics <- data.frame(Metric=c("Initial Logisitc Regression","Hypertuned Logisitc Regression","Homogenous Ensemble","K-cross validation"),Accuracy=c(accuracy_log_intial,accuracy_best_log,accuracy_log_ensemble,accuracy_k),F1_score= c(f1_log_intial,f1_best_log,f1_log_ensemble,f1_k))
+
+kable(logistic_reg_metrics,caption="Metrics for Logistic Regression Homogenous Ensemble")
+```
+
+The initial logistic regression model performed well with all predictors without any tuning and can lead to overfitting as there are statistically insignificant values.The hypertuned logistic regression model used AIC elimination and improved the performance of the model.The homogeneous ensemble averaged the predictions from 10 hypertuned models and has a good accuracy rate and F1-score.It is a stable model when compared to the K-cross validation model as the F1-score is maintained across both models.The hypertuned models has the best test-set metrics but the ensemble generalized the data across different partitions and is best suited to build the heterogenous ensemble.
+
+# Random Forest Model Algorithm.
+
+## Train Random Forest Model
+
+In this step,the Random Forest Model is trained on the subsets:
+
+1)  `df.subset.train.rf` for training
+2)  `df.subset.test.rf` for testing
+
+Random Forest is an ensemble method that builds multiple decision trees and aggegrated the outputs by averaging the predictions and thus it is a homogeneous ensemble.
+
+Model Parameters:
+
+-   `mtry`:defines the number of predictor variables randomly selected at each split.It is initialized as the square root of the number of predictors as it is a common default heuristic method.
+
+$$
+mtry = \sqrt{p}
+$$
+
+where p is the number of predictor variables, excluding the target variable.
+
+-   `ntree`:Specifies the number of trees that are generated.Initially,`ntree` is set to 100 as this is enough to stabilize the model.Increasing this value can improve the stability but if a suitable ntree value is found adding more trees will not yield additional information and it becomes computationally expensive.
+
+The model is used to predict the target variable `PULMONARY_DISEASE` on the `df.subset.test.rf` dataset.
+
+```{r random_forest,echo=TRUE,warning=FALSE}
+
+# Set seed for reproducibility
+set.seed(123)
+
+# Convert target variable(pulmonary_disease) into factor, as is required for classification
+df_subset_train$PULMONARY_DISEASE <- as.factor(df_subset_train$PULMONARY_DISEASE)
+df_subset_test$PULMONARY_DISEASE <- as.factor(df_subset_test$PULMONARY_DISEASE)
+
+# Determine the number of features to predict model except target variable
+number_features <- ncol(df_subset_train) - 1
+
+# Determine the intial value for mtry
+intial_mtry_val <- floor(sqrt(number_features))
+
+# Train random forest model
+random_forest_model <- randomForest(PULMONARY_DISEASE ~ .,data=df_subset_train,ntree=100,mtry=intial_mtry_val,importance=TRUE)
+
+# Print model summary
+print(random_forest_model)
+
+```
+
+We have successfully trained our random forest model and the summary confirms that the model has been correctly built.
+
+### Calculate F1 score for Random Forest Model
+
+The performance of the Random Forest Model is evaluated by calculating its F1-score. The predicted class labels generated by the Random Forest Model is compared with the actual target values from the test dataset.A confusion matrix is constructed and the F1-score is calculated to determine the model's performance.
+
+```{r calcf1_rf,echo=TRUE,warning=FALSE}
+
+# Predict prob on df.subset.test dataset
+random_forest_predict <- predict(random_forest_model,df_subset_test,type="response")
+
+
+# Construct confusion matrix 
+confusion_matrix_rf <- confusionMatrix(random_forest_predict,df_subset_test$PULMONARY_DISEASE)
+
+# F1 score calculation
+f1_score_rf <- confusion_matrix_rf$byClass["F1"]
+cat("F1 score for Random Forest Model is:",round(f1_score_rf,2))
+```
+
+The F1-score for the intial random forest model is: `r f1_score_rf`.
+
+## Hypertune model
+
+To improve the performance of the model hyperparameter tuning was conducted using 2 parameters:
+
+1)  `mtry`: the number of decision trees in the forest,
+2)  `ntree` : the number of features randomly selected at each split.
+
+The range of values for `ntree` are (100 to 400) which will help test the model stability as more trees are added.A lower number of trees generates faster training but higher number of trees can increase stability but up to a point.
+
+The values for `mtry` are (2,3,4,5,6,sqrt(p)) used often for classification problems.These values can help evaluate the model's accuracy.
+
+For each combination of the parameters the Random Forest Model was trained and evaluated using the F1-score on the test dataset. The OOB error was also considered during training.The OOB error is the internal cross-validation error estimate calculated by the Random Forest model using the bootstrapped samples.
+
+The optimal model could be selected based on:
+
+1)  Highest F1-score,
+2)  Lowest OOB error.
+
+The F1-score measures the models accuracy on the test data while OOB error measures how the model generalizes internally. For this dataset,the optimal model was chosen with the highest F1 score.This was because it was important to ensure that there was a balanced classification performance in identifying positive and negative cases of the Pulmonary Disease.Thus,the F1 score is the more suitable metric for this analysis.
+
+```{r hypertune_rf,echo=TRUE,warning=FALSE}
+
+# Number of features to predict model except target variable
+number_features <- ncol(df_subset_train) - 1
+
+# Intial value for mtry
+intial_mtry_val <- floor(sqrt(number_features))
+
+# Values for hypertuning
+ntree_val <- c(100,200,300,400)
+mtry_val <- c(2,3,4,5,6,intial_mtry_val)
+
+
+# Intialize to store results
+store_ntree_val <- c()
+store_mtry_val <- c()
+store_f1_val<- c()
+store_oob_val <- c()
+# Set seed for reproducibility
+set.seed(123)
+
+for(i in ntree_val){
+  for (j in mtry_val){
+    # Train model
+    rf_hypertune_model <- randomForest(PULMONARY_DISEASE ~.,data=df_subset_train,ntree=i,mtry=j)
+    
+    # Predict model
+    rf_hypertune_model_predict <- predict(rf_hypertune_model ,df_subset_test,type="response")
+   
+    # Calc F1 score
+    conf_mat <- confusionMatrix(rf_hypertune_model_predict,df_subset_test$PULMONARY_DISEASE)
+    f1_val <- conf_mat$byClass["F1"]
+    
+    #get final oob error rate from model
+    oob_val <- tail(rf_hypertune_model$err.rate[,"OOB"],n=1)
+    
+    # Store results
+    store_ntree_val <- c(store_ntree_val,i)
+    store_mtry_val <- c(store_mtry_val,j)
+    store_f1_val <- c(store_f1_val,f1_val )
+    store_oob_val <- c(store_oob_val,oob_val )
+
+  
+    cat("ntree=", i, ",mtry=", j, "for F1 score  =", f1_val ,"OOB error = ",oob_val,"\n")
+  }
+}
+
+# Store values in dataframe
+hypertune_res <- data.frame(ntree=store_ntree_val,mtry=store_mtry_val,f1_score = store_f1_val,oob_error=store_oob_val)
+
+# Find optimal rf using highest F1 score
+index <- which.max(hypertune_res$f1_score)
+optimal_val <- hypertune_res[index,]
+
+# Print model for highest F1 score
+cat("Optimal Random Forest model:ntree =",optimal_val$ntree,", mtry =",optimal_val$mtry, ",  F1 score  =",optimal_val$f1_score,"with OOB error=",optimal_val$oob_error,"\n")
+
+# Rf model using optimal values
+optimal_ntree <- as.numeric(optimal_val$ntree)
+optimal_mtry <- as.numeric(optimal_val$mtry)
+
+# Final rf model
+final_rf_model <- randomForest(PULMONARY_DISEASE ~ .,data=df_subset_train,ntree=optimal_ntree,mtry=optimal_mtry,importance=TRUE)
+
+# Predict final rf model
+final_rf_predict <- predict(final_rf_model,df_subset_test,type="response")
+
+# Calc F1 score
+final_conf_mat <- confusionMatrix(final_rf_predict,df_subset_test$PULMONARY_DISEASE)
+final_f1_val <- final_conf_mat$byClass["F1"]
+
+final_f1_val 
+
+```
+
+Thus, the final F1 value for the hypertuned random forest model is: `r final_f1_val`.
+
+## K-fold cross validation
+
+The Random Forest is evaluated using 5-fold cross validation with hypertuned parameters(mtry and ntree). For each fold the model was trained on 80% of the data and tested on 20%.The predictions were used to calculate the F1-score for the model. The value of k was chosen as 5 to get accurate model prediction.Using 5 folds ensured that the model was trained on a large dataset.
+
+```{r k_fold_rf,echo=TRUE,warning=FALSE}
+#set seed
+set.seed(123)
+#target var is factor
+df_subset_train$PULMONARY_DISEASE <- as.factor(df_subset_train$PULMONARY_DISEASE)
+#get hypertuned val for mtry and ntree
+opt_ntree <- as.numeric(optimal_val$ntree)
+opt_mtry <- as.numeric(optimal_val$mtry)
+#no of fold
+k <- 5
+#create fold
+fold_rf <- createFolds(df_subset_train$PULMONARY_DISEASE,k=k,list=T)
+
+#store f1 score
+store_f1_rf_cv <- numeric(k)
+#for loop
+for (i in 1:k){
+  val_index <- fold_rf[[i]]
+  val_data <- df_subset_train[val_index,]
+  train_data <- df_subset_train[-val_index,]
+
+  #train rf with hypertuned val
+  rf_model_cv <- randomForest(PULMONARY_DISEASE ~ . ,data=train_data,ntree=opt_ntree,mtry=opt_mtry)
+  #predict on val data
+  rf_pred_cv <- predict(rf_model_cv,val_data)
+  #calc confusion mat
+  con_mat_rf_cv <- confusionMatrix(rf_pred_cv,val_data$PULMONARY_DISEASE,positive="1")
+  #store f1 score
+  store_f1_rf_cv[i] <- con_mat_rf_cv$byClass["F1"]
+  
+    }
+
+#avg f1 score
+avg_f1_rf_cv <- mean(store_f1_rf_cv)
+avg_f1_rf_cv 
+
+```
+
+The F1-score for the k-cross validation ensemble is `r avg_f1_rf_cv`.
+
+## ROC-AUC for Random Forest Model
+
+The ROC curve is used to illustrate the diagnostic ability of a binary classifier as its discrimination threshold is varied.The ROC curve plots the True Positive Rate(TPR) against the False Positive Rate(FPR). These metrics are calculated using:
+
+1)  True Positive Rate(TPR) = TP/(TP+FN)
+2)  False Positive Rate(FPR) = FP/(FP+TN)
+
+The area under the curve provides an aggregate measure of the model's performance.It ranges from 0 to 1,a higher AUC indicated better model performance.
+
+```{r roc_random_forest,echo=TRUE,warning=F}
+
+#get actual labels as numeric for roc
+actual_rf_label <- as.numeric(as.character(df_subset_test$PULMONARY_DISEASE))
+
+#get predicted labels for class 1 from final rf model
+rf_pred_prob <- predict(final_rf_model,df_subset_test,type="prob")[,2] 
+# mean predicted prob from homogenous ensemble
+calc_roc_rf <- roc(actual_rf_label,rf_pred_prob)
+
+
+#plot roc curve
+plot(calc_roc_rf,main="ROC curve for Random Forest Model",print.auc=T)
+
+#calc AUC value for logistic regression ensemble
+auc_val_rf <- auc(calc_roc_rf)
+
+```
+
+The AUC value for the optimal hypertuned random forest model is `r auc_val_rf`.This means that there is a `r round(auc_val_rf * 100,1)` % chance that the model will rank a patient with pulmonary disease higher than a randomly chosen patient without the disease based on the predicted probabilities.
+
+## Final Metrics for Random Forest Model.
+
+The below table lists the Accuracy,F1 score and the AUC for the Inital RF","Hypertuned RF","K-fold CV-RF" Random Forest Models.
+
+```{r display_random_forest,echo=TRUE,warning=FALSE}
+#calc accuracy
+accuracy_rf_initial <- sum(random_forest_predict == df_subset_test$PULMONARY_DISEASE)/nrow(df_subset_test)
+# Accuracy for hypertuned model
+accuracy_rf <- sum(final_rf_predict == df_subset_test$PULMONARY_DISEASE) / nrow(df_subset_test)
+
+#table to store values
+random_forest_metrics <- data.frame(Model=c("Inital RF","Hypertuned RF","K-fold CV-RF"),F1_Score = c(f1_score_rf,final_f1_val,avg_f1_rf_cv),Accuracy=c(accuracy_rf_initial,accuracy_rf,NA))
+kable(random_forest_metrics,caption="Metrics for Random Forest Model")
+
+
+```
+
+The initial random forest model has a good performance without any hypertuning and was able to capture complex patterns in the data.This is expected since random forests handle non-linear relationships well between features.On hyper tuning the model the model's accuracy and F1-score increased slightly due to the optimal parameters such as mtry and ntree.The K-cross validation's F1-score suggested that the tuned model performed well on the training dataset but there may be some variance across the models.Thus,the hypertuned random forest has the highest accuracy and F1-scores and is the best suited to build the heterogeneous ensemble.
+
+# SVM
+
+## Train single SVM Model
+
+An initial support vector model was trained on the subset(`df_subset_train`) using a radial basis function(RBF) kernel.The model is then evaluated on the test subset(`df_subset_test`). The probabilities for each class was obtained and the classification threshold of 0.7 was used to convert the predicted probabilities into class labels("0","1").The performance is then evaluated using the confusion matrix and the F1-score is calculated.
+
+```{r intial_svm_model,echo=T,warning=FALSE}
+
+#convert to factor
+df_subset_train$PULMONARY_DISEASE <- factor(df_subset_train$PULMONARY_DISEASE,levels=c(0,1))
+df_subset_test$PULMONARY_DISEASE <- factor(df_subset_test$PULMONARY_DISEASE,levels=c(0,1))
+
+#intial svm model
+svm_model <- svm(PULMONARY_DISEASE ~ .,data=df_subset_train,kernel="radial",probability=T)
+#predict for intial svm model
+predict_svm <- predict(svm_model,df_subset_test,probability=T)
+
+#extract ptob
+prob_mat <- attr(predict_svm,"probabilities")
+
+#predict for threshold 0.5
+predict_class_svm <- ifelse(prob_mat[,"1"] >= 0.7,"1","0")
+#convert to factor
+predict_class_svm <- factor(predict_class_svm,levels=c("0","1"))
+
+#convert actuak labels to factor
+actual_label_svm <- factor(df_subset_test$PULMONARY_DISEASE,levels=c("0","1"))
+#construct intial confusion mat
+con_mat_svm_intial <- confusionMatrix(predict_class_svm,actual_label_svm,positive="1")
+#get f1 score
+f1_val_svm_intial <-con_mat_svm_intial$byClass["F1"]
+f1_val_svm_intial
+
+```
+
+The F1-score for the initial SVM model is `r f1_val_svm_intial`.
+
+## Hypertune SVM
+
+Hyper parameter tuning for SVM is performed using radial kernel and by testing different combinations of `cost` and `gamma` values. For each of these combinations the model is trained on the training data predictions are made and the F1-score is computed.The model with the highest F1-score is selected as the best model and the corresponding cost and gamma values are used to train all the 10 partitions.
+
+The parameters: 1) Cost: controls the trade off between getting a low-training error and a low testing error.A small c value(0.01,0.1) makes the margin softer where as a larger c value(1,10) tries to classify all training examples correctly.
+
+2)  Gamma: Defines how far the influence of a single training example reaches.A low gamma(0.001) implies that the model is more constrained and a high gamma(0.1) can influence the model to be more localized.
+
+```{r hypertune_svm,echo=TRUE,warning=FALSE}
+#grid parameters for hypertuning
+cost <- c(0.01,0.1,1,10)
+gamma <- c(0.001,0.01,0.1)
+
+#convert target var into factor
+df_subset_train$PULMONARY_DISEASE <- factor(df_subset_train$PULMONARY_DISEASE,levels=c("0","1"))
+
+#intialize values
+best_f1_score_svm <- 0
+best_cost_svm <- NA
+best_gamma_svm <- NA
+best_model_svm <- NULL
+
+#for loop to create models for cost/gamma combination
+for(i in cost){
+  for (j in gamma){
+    #constuct model for each cost/gamma combination
+    model <- svm(PULMONARY_DISEASE ~ .,data=df_subset_train,kernel="radial",cost=i,gamma=j,probability=T)
+    #predict model for each cost/gamma combination
+    predict_svm_hypertune <- predict(model,df_subset_train)
+    #construct confusion  mat(pos class ="1")
+    con_mat_svm_hypertune <- confusionMatrix(predict_svm_hypertune,df_subset_train$PULMONARY_DISEASE,positive="1")
+    
+    #get f1 score
+    f1 <- con_mat_svm_hypertune$byClass["F1"]
+    
+    #update f1 score if it is better
+    if(!is.na(f1) && f1>best_f1_score_svm){
+      best_f1_score_svm <- f1
+      best_cost_svm <- i
+best_gamma_svm <- j
+best_model_svm <- model
+
+    }
+    }
+}
+cat("Model with best cost:",best_cost_svm,",gamma:",best_gamma_svm,"and F1 score:",best_f1_score_svm)
+```
+
+## Train SVM models using best gamma and cost values
+
+The SVM model is trained on each partition using the best-performing cost and gamma values indetified during the hyperparameter tuning.
+
+```{r train_svm_hypertune,echo=T,warning=FALSE}
+# Create list to store models
+store_svm_hypertuned <- list()
+
+# Fit logistic regression model on each training partition
+for (i in 1:length(partitions)){
+  training_data_svm <- partitions[[i]]
+  #check if target is factor
+  training_data_svm$PULMONARY_DISEASE <- factor(training_data_svm$PULMONARY_DISEASE,levels=c("0","1"))
+  #svm Logistic regression for full model
+  svm_model_hypertuned <- svm(PULMONARY_DISEASE ~ .,data=training_data_svm,kernel="radial",cost=best_cost_svm ,gamma=best_gamma_svm,probability=T)
+  
+  store_svm_hypertuned[[i]] <- svm_model_hypertuned
+}
+```
+
+## Predict for hypertuned SVM
+
+The trained hypertuned SVM is used to predict probabilities on the test data and F1-score is computed for each model.The model with the highest F1-score is identified as the best-performing hypertuned SVM.
+
+```{r predict_hypertuned_svm,echo=TRUE,warning=FALSE}
+
+# Count the number of multiply logistic models
+number_models <- length(store_svm_hypertuned)
+
+#store actual labels for test
+actual_label_svm <- factor(df_subset_test$PULMONARY_DISEASE,levels=c("0","1"))
+
+# Create a matrix of 0 to store the predictions
+svm_pred_matrix_hypertuned <- matrix(0,nrow=nrow(df_subset_test),ncol=number_models)
+
+#store F1-score
+store_f1_val_svm_hypertuned <- c()
+
+# Create a loop that will go through each model making predictions
+for(i in 1:number_models){
+  
+  #predict the class labels
+  pred_svm_hypertuned <-  predict(store_svm_hypertuned[[i]],df_subset_test,probability=T)
+ 
+  #convert pred_svm into factor
+  pred_svm_hypertuned <- factor(pred_svm_hypertuned,levels=c("0","1"))
+  #store pred in matrix
+  svm_pred_matrix_hypertuned[,i] <- ifelse(pred_svm_hypertuned == "1",1,0)
+  
+  #calc confusion matrix
+  hypertuned_con_mat_svm <- confusionMatrix(pred_svm_hypertuned,actual_label_svm)
+  
+  #calc f1 score
+  f1_score_svm <- hypertuned_con_mat_svm$byClass["F1"]
+  store_f1_val_svm_hypertuned <- c(store_f1_val_svm_hypertuned ,f1_score_svm)
+  
+
+}
+#highest f1-scroe model
+best_svm_index <- which.max(store_f1_val_svm_hypertuned)
+best_f1_score_svm_hypertuned <- store_f1_val_svm_hypertuned[best_svm_index]  
+best_f1_score_svm_hypertuned
+
+
+```
+
+## Build Homogenous ensemble for SVM
+
+The homogeneous ensemble was created by averaging the binary predictions from all the hypertuned SVM models.The final class predictions were obtained for a threshold of 0.7 to these averaged values.The resulting predicitons are evaluated using the confusion matrix and F1-score is calculated.
+
+```{r homogen_svm,echo=TRUE,warning=F}
+#func to run homogenous ensemble
+func_svm_ensemble <- function(pred_matrix,true_labels,threshold=0.7) {
+#get avg pred for models
+mean_pred_svm <- rowMeans(pred_matrix)
+
+#class pred for threshold
+pred_class_svm <- factor(ifelse(mean_pred_svm>threshold,"1","0"),levels=c("0","1"))
+actual_label_svm <- factor(true_labels,levels=c("0","1"))
+
+#calc confusion mat
+con_mat_svm_ensemble <- confusionMatrix(pred_class_svm,actual_label_svm,positive="1")
+f1_svm_ensemble <- con_mat_svm_ensemble $byClass["F1"]
+return(list(pred_labels=pred_class_svm,f1_score=f1_svm_ensemble))
+}
+svm_homogenous_ensemble <- func_svm_ensemble(svm_pred_matrix_hypertuned,df_subset_test$PULMONARY_DISEASE)
+svm_ensemble_label <- svm_homogenous_ensemble$pred_labels
+f1_val_svm_ensemble <-svm_homogenous_ensemble$f1_score
+f1_val_svm_ensemble
+```
+
+The F1-score for the homogeneous SVM is `r f1_val_svm_ensemble`.
+
+## K-Cross validation for SVM
+
+The performance of the hypertuned SVM ensemble was evaluated using the 5-fold cross validation.For each fold the bootstrapped training subsets were created and the individual SVM models were trained using the optimal cost and gamma values.Their predictions were averaged to form an ensemble prediction and the F1-score of computed for each fold and the average F1-score for all the models was calculated.
+
+```{r k_cross_avm,echo=TRUE,warning=F}
+#set seed
+set.seed(123)
+
+#no of fold 
+k <- 5
+#create fold
+fold_svm_cv <- createFolds(df_subset_train$PULMONARY_DISEASE,k=k,list=T)
+
+#store F1 val
+f1_score_svm_cv <- numeric(k)
+
+#for loop
+for (i in 1:k){
+  fold_test <- df_subset_train[fold_svm_cv[[i]],]
+  fold_train <- df_subset_train[-fold_svm_cv[[i]],]
+  
+  #boostrapped partitions
+  partitions_svm <- list()
+  for (x in 1:n_partitions){
+    index_svm <- sample(1:nrow(fold_train),size=sample_size,replace=T)
+     partitions_svm[[x]] <- fold_train[index_svm,]
+  }
+  
+  
+  
+  #mat for fold
+  svm_pred_matrix_cv <- matrix(0,nrow=nrow(fold_test),ncol=n_partitions)
+  #svm
+  for (j in 1:length(partitions)){
+    model <- svm(PULMONARY_DISEASE ~ .,data=partitions_svm[[j]],kernel="radial",cost=best_cost_svm,gamma=best_gamma_svm,probability=T)
+    
+    predict_svm_cv <- predict(model,fold_test,probability=T)
+    prob_matrix_cv <- attr(predict_svm_cv,"probabilities")
+    svm_pred_matrix_cv[,j] <-  prob_matrix_cv[,"1"]
+    
+   
+  }
+   #construct ensemble
+    avg_pred_svm <- rowMeans(svm_pred_matrix_cv)
+    
+    #convert to class using 0.5 as threshold
+    final_pred_svm_cv <- ifelse(avg_pred_svm>0.7,"1","0")
+    final_pred_svm_cv <- factor(final_pred_svm_cv,levels=c("0","1"))
+    #actual lavel
+    actual_label_svm_cv <- factor(fold_test$PULMONARY_DISEASE,levels=c("0","1"))
+    
+    #calc f1 score
+    con_mat_svm_cv <- confusionMatrix(final_pred_svm_cv ,actual_label_svm_cv,positive="1")
+    f1_score_svm_cv[i] <- con_mat_svm_cv$byClass["F1"]
+}
+avg_f1_cv_svm <- mean(f1_score_svm_cv)
+avg_f1_cv_svm 
+
+```
+
+The F1-Score for the k-cross validation SVM model is `r avg_f1_cv_svm`.
+
+## ROC-AUC for Support Vector Model
+
+The ROC curve is used to illustrate the diagnostic ability of a binary classifier as its discrimination threshold is varied.The ROC curve plots the True Positive Rate(TPR) against the False Positive Rate(FPR). These metrics are calculated using:
+
+1)  True Positive Rate(TPR) = TP/(TP+FN)
+2)  False Positive Rate(FPR) = FP/(FP+TN)
+
+The area under the curve provides an aggregate measure of the model's performance.It ranges from 0 to 1,a higher AUC indicated better model performance.
+
+```{r roc_svm,echo=TRUE,warning=F}
+
+#get actual labels as numeric for roc
+actual_label_svm <- as.numeric(as.character(df_subset_test$PULMONARY_DISEASE))
+
+#get predicted labels for class 1 from final rf model
+ mean_predictions_svm <- rowMeans(svm_pred_matrix_hypertuned)
+svm_pred_prob <- mean_predictions_svm
+# mean predicted prob from homogenous ensemble
+calc_roc_svm <- roc(actual_label_svm,svm_pred_prob )
+
+
+#plot roc curve
+plot(calc_roc_svm,main="ROC curve for Support Vector Model",print.auc=T)
+
+#calc AUC value for logistic regression ensemble
+auc_val_rf <- auc(calc_roc_svm)
+
+```
+
+The ROC curve has the AUC for the Support Vector Model is `r auc_val_rf`.
+
+## Final Metrics for Support Vector Model.
+
+The below table lists the Accuracy and F1 score for the intial SVM,hypertuned SVM , homogeneous ensemble SVM and K-cross-validated homogeneous ensemble .
+
+```{r display_svm,echo=TRUE,warning=FALSE}
+#calc accuracy and f1 for intial SVM model
+accuracy_svm_intial <- sum(predict_class_svm == df_subset_test$PULMONARY_DISEASE)/nrow(df_subset_test)
+f1_val_svm_intial <- f1_val_svm_intial
+
+
+#accuracy and f1 value for best hypertuned svm model
+best_svm_model <- store_svm_hypertuned[[best_svm_index]]
+pred_best_svm <- predict(best_svm_model,df_subset_test)
+pred_best_svm <- factor(pred_best_svm,levels=c("0","1"))
+actual_label_svm <- factor(df_subset_test$PULMONARY_DISEASE,levels=c("0","1"))
+accuracy_best_svm <- sum(pred_best_svm == df_subset_test$PULMONARY_DISEASE)/nrow(df_subset_test)
+conf_best_svm <- confusionMatrix(pred_best_svm,actual_label_svm,positive="1")
+f1_best_svm <- conf_best_svm$byClass["F1"]
+
+#accuracy and f1 for hhomogenous ensemble
+svm_ensemble_pred <- svm_ensemble_label
+accuracy_ensemble_svm <- sum(svm_ensemble_pred == df_subset_test$PULMONARY_DISEASE)/nrow(df_subset_test)
+conf_ensemble_svm <- confusionMatrix(svm_ensemble_pred,actual_label_svm,positive="1")
+f1_ensemble_svm <- f1_val_svm_ensemble
+
+#cross-validated f1 score
+cv_f1_score <- avg_f1_cv_svm
+#table to store values
+svm_metrics <- data.frame(Model=c("Initial","Best Hypertuned SVM","Homogenous SVM Ensemble(Test Set)","Homogenous SVM Ensemble(K-cross)"),Accuracy=round(c(accuracy_svm_intial,accuracy_best_svm,accuracy_ensemble_svm,NA),3),F1_Score =round(c(f1_val_svm_intial,f1_best_svm ,f1_ensemble_svm,cv_f1_score ),3))
+
+kable(svm_metrics ,caption="Metrics for Support Vector Model")
+
+
+```
+
+The initial SVM model has the highest accuracy and the F1-score compared to the tuned and homogeneous SVM models.However,this model was trained on only one training subset and it is more susceptible to over fitting.The best hypertuned SVM model's performance was good due to parameter optimization.The homogeneous SVM ensemble was built using multiple SVM models on bootstrapped subsets of the training data and then averging their predicted probabilities.This model is more suitable since it is less influenced by noise and captures a stable output of the dataset.This ensemble has a high accuracy(`r accuracy_ensemble_svm`) and F1-score(`r f1_ensemble_svm`) which balances the false positives and negatives.
+
+# Heterogenous Ensemble using Logistic Regression,Random Forest and Support Vector Model
+
+The heterogeneous ensemble model was created by averaging the predicted probabilities from the three models: logistic regression,random forest and SVM.The ensemble combines the predictions from the three models and averages it to improve the accuracy. A threshold of 0.7 was used to convert the averaged probabilities into class predictions.This higher threshold was chosen to increase the model's precision and reduce the number of false positives where incorrectly predicting a disease can lead to a mistake.
+
+```{r heterogenous_model,echo=TRUE,warning=FALSE}
+
+#func to build het ensemble
+het_ensemble <- function(logistic_prob,svm_prob,rf_prob,actual_label,threshold=0.7){
+  
+  #heterogenous ensemble as average prob
+avg_prob_het <- (logistic_prob+svm_prob+rf_prob)/3
+
+#get predicted labels
+predicted_label <- ifelse(avg_prob_het>threshold,"1","0")
+predicted_label <- factor(predicted_label,levels=c("0","1"))
+
+#get actual labels as factor
+actual_label <- factor(actual_label,levels=c("0","1"))
+
+#calc confuion mat
+con_mat_het <- confusionMatrix(predicted_label,actual_label,positive="1")
+
+#get f1 score
+f1_score <- con_mat_het$byClass["F1"]
+return(f1_score)
+}
+
+#get predicted prob for all 3 models
+logistic_prob_het <- rowMeans(logistic_model_pred)
+svm_prob_het <- rowMeans(svm_pred_matrix_hypertuned)
+#for rf get predicted prob
+rf_prob_het <- predict(final_rf_model,df_subset_test,type="prob")[,"1"]
+
+#get final actual label 
+actual_label_het <- df_subset_test$PULMONARY_DISEASE
+
+#call func
+het_ensemble_res <- het_ensemble(logistic_prob=logistic_prob_het,svm_prob=svm_prob_het,rf_prob = rf_prob_het,actual_label = actual_label_het,threshold=0.7)
+#print
+print(het_ensemble_res)
+#calc avg_prob for soft voting
+avg_prob_het <- (logistic_prob_het+svm_prob_het+rf_prob_het)/3
+#convert to factor
+actual_label_het <- factor(actual_label_het,levels=c("0","1"))
+
+```
+
+The F1-score for the heterogeneous ensemble is `r het_ensemble_res`.
+
+## Using Stacking
+
+The outputs of the three models were combined by training a meta-learner using their predicted probabilities as input features.A threshold of 0.7 was used to convert the averaged probabilities into class predictions.This higher threshold was chosen to increase the model's precision and reduce the number of false positives where incorrectly predicting a disease can lead to a mistake. Logistic regression was chosen as the meta-learner in the stacking ensemble as it is easy to interpret and can predict binary classifications very well.It models the probability of the positive class as a weighted combination of the base learners outputs and can combine predicted probabilities from the random forest and SVM models.
+
+```{r het_stacking,echo=TRUE,warning=FALSE}
+#set seed
+#set.seed(123)
+#meta train
+meta_train <- trainControl(method="cv",number=5,classProbs = T)
+#stackign sensemble func
+stack_ensemble <- function(logistic_prob,svm_prob,rf_prob,actual_label,threshold=0.7){
+  
+  #acrual label to factor
+  actual_label <- factor(actual_label,levels = c("0","1"),labels=c("No","Yes"))
+  
+  #meta learner features
+  meta_feat_stack <- data.frame(logistic=logistic_prob,svm=svm_prob,rf=rf_prob,label=actual_label)
+  
+  #train meta learnign using log reg
+stack_model <- train(label ~ .,data=meta_feat_stack,method="glm",family="binomial",trControl=meta_train)
+
+#get class prob from stacked model
+pred_prob_stack <- predict(stack_model,newdata=meta_feat_stack,type="prob")[,"Yes"]
+
+#convert prob using threshold 0.5
+pred_class_stack <- factor(ifelse(pred_prob_stack > 0.7,"Yes","No"),levels=c("No","Yes"))
+#calc confusion mat
+con_mat_stack <- confusionMatrix(pred_class_stack,actual_label,positive="Yes")
+
+#f1 score
+f1_stack <- con_mat_stack$byClass["F1"]
+
+return(list(predicted_class=pred_class_stack,actual_label = actual_label,f1_score=f1_stack,model=stack_model,predicted_prob=pred_prob_stack))
+}
+  
+  
+#get predicted prob from all models
+logistic_prob_stack <- rowMeans(logistic_model_pred)
+svm_prob_stack <- rowMeans(svm_pred_matrix_hypertuned)
+rf_prob_stack <- predict(final_rf_model,df_subset_test,type="prob")[,"1"]
+
+#get actual labels
+actual_label_stack <- df_subset_test$PULMONARY_DISEASE
+  
+#call func
+stack_res <- stack_ensemble(logistic_prob = logistic_prob_stack,svm_prob=svm_prob_stack,rf_prob = rf_prob_stack,actual_label = actual_label_stack,threshold=0.7)
+
+#print f1 score
+f1_stack <-stack_res$f1_score
+f1_stack   
+
+```
+
+The F1-score for the stacked heterogenous model trained on logistic regression model is: `r f1_stack`.
+
+## ROC-AUC for Heterogenous Ensemble
+
+The ROC curve is used to illustrate the diagnostic ability of a binary classifier as its discrimination threshold is varied.The ROC curve plots the True Positive Rate(TPR) against the False Positive Rate(FPR). These metrics are calculated using:
+
+1)  True Positive Rate(TPR) = TP/(TP+FN)
+2)  False Positive Rate(FPR) = FP/(FP+TN)
+
+The area under the curve provides an aggregate measure of the model's performance.It ranges from 0 to 1,a higher AUC indicated better model performance.
+
+The ROC Curve is plotted for both the heterogenous ensemble built using soft voting and stacking.
+
+```{r roc_het,echo=TRUE,warning=F}
+#roc for soft voting het
+roc_het_soft <- roc(actual_label_het,avg_prob_het)
+plot(roc_het_soft,main="ROC Curve for soft-voting heterogenous ensemble",print.auc=T)
+auc_het_soft <- auc(roc_het_soft)
+
+#roc for stacking het
+roc_het_stack <- roc(stack_res$actual_label,stack_res$predicted_prob)
+plot(roc_het_stack,main="ROC Curve for stacked heterogenous ensemble",print.auc=T)
+auc_het_stack <- auc(roc_het_stack)
+```
+
+The AUC value for the soft-voting heterogeneous ensemble is `r auc_het_soft` and for the stacked heterogeneous ensemble it is `r auc_het_stack`.
+
+## Final Metrics for Heterogenous Ensemble Model
+
+The table below shows the accuracy and F1-scores for the soft-voting and stacked heterogeneous ensembles which were used to predict if a patient has a pulmonary disease.
+
+```{r final_het,echo=TRUE,warning=FALSE}
+#get predicted class for soft-voting
+predicted_class_soft <- factor(ifelse(avg_prob_het > 0.7,"1","0"))
+#soft voting
+accuracy_soft <- sum(predicted_class_soft ==actual_label_het)/length(actual_label_het)
+#stacked model
+accuracy_stacked <- sum(stack_res$predicted_class==stack_res$actual_label)/length(stack_res$actual_label)
+
+#table
+ensemble_met <- data.frame(Model=c("Soft-Voting","Stacked Model"),Accuracy=c(accuracy_soft,accuracy_stacked),F1_Score =c(het_ensemble_res,f1_stack))
+kable(ensemble_met,caption="Final Metrics for the Heterogenous Ensemble Models")
+
+```
+
+The stacked model has an accuracy of `r accuracy_stacked` with a F1-Score of `r f1_stack` which is higher than the accuracy and F1-score of the soft-voting heterogeneous ensemble. The AUC value of both models are comparable(`r auc_het_stack`) but the stacked-heterogeneous ensemble outperforms the soft-voting model and thus is the best model to predict the pulmonary disease in a patient.
+
+The heterogeneous ensemble created by averging the predicted probabilities of the three models improved the model stability and performance and stacking was implemented to further enhance it's performance using meta-learning.Stacking uses a meta-learner(logistic regression) to weigh and combine the outputs of the base learner(logistic regression,random forest and support vector machines).By understanding the patterns in the base models the stacked model corrected the individual weaknesses and produced a high performance model.
+
+# Final interpretation
+
+## Models Used:
+
+Since the target variable is binary this is a classification problem.I selected the following models: Logistic Regression was used as it is suitable for a binary classfication and it is easy to interpret.It identified the importance of features and was also used as the meta learner in the stacked ensemble.Random Forest model was selected as it can handle both numerical and categorical data and could identify non-linear patterns.Support Vector Model with an RBF kernel was included as it is useful in high-dimensional spaces and can identify non-linear boundaries.The heterogeneous ensemble models(soft voting and stacking) were applied to combine all three models predictions.
+
+To evaluate the predictive performance of the 3 models in identifying pulmonary disease the homogeneous models used were:
+
+1)  Logistic Regression with accuracy of `r accuracy_log_ensemble` and F1 score `r f1_log_ensemble`.
+
+2)  Random Forest with accuracy of `r accuracy_rf` and F1 score `r final_f1_val`.
+
+3)  Support Vector Machine with accuracy of `r accuracy_ensemble_svm` and F1 score `r f1_ensemble_svm`.
+
+Thus, the **homogeneous random Forest Model** has the highest accuracy and highest F1-score indicating that it is the best model to identify patients with and without pulmonary disease.This is expected as random forest is a homogeneous ensemble of decision trees and it allows the model to capture more complex relationships in the data.
+
+Comparing the performance of random forest model with the stacked heterogeneous ensemble their accuracy is similar.To predict patients with pulmonary disease,it is best to use the stacked heterogeneous model since it combines multiple models(logistic regression,support vector and random forest).All three models deal with a variety of data.Logistic regression deals with linear,SVM deals with margin-based and Random Forest deals with tree-based data.Though the Random Forest Model slightly outperforms the Stacked Heterogeneous model in terms of individual metrics,the heterogeneous model through its meta-learning approach helps in reducing the weakness of the individual model.It reduces over fitting risks and combines diverse patterns and thus,the **stacked heterogeneous ensemble** is best suited for this dataset.
+
+## Citations:
+
+The dataset used for this project is available at: <https://www.kaggle.com/datasets/shantanugarg274/lung-cancer-prediction-dataset/data>
+
+```{r}
+# Ensure the dataset is loaded fresh
+rm(list = ls())        # Clear environment
+data("cars", package = "datasets")  # Explicitly load from datasets package
+
+# Compute z-scores for 'dist'
+z_scores <- scale(cars$dist)
+
+# Find row numbers with abs(z) > 2.5
+outlier_rows <- which(abs(z_scores) > 2.5)
+outlier_rows
+
+```
